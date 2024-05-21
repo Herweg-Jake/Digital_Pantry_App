@@ -1,0 +1,53 @@
+[
+    {
+        "_id": "ObjectId",
+        "username": "String",
+        "email": "String",
+        "password_hash": "String",
+        "created_at": "DateTime"
+    },
+    {
+        "_id": "ObjectId",
+        "fdc_id": "String",
+        "description": "String",
+        "food_category": "String",
+        "brand_owner": "String",
+        "ingredients": "String",
+        "nutrients": [
+            {
+                "nutrient_id": "String",
+                "nutrient_name": "String",
+                "unit_name": "String",
+                "value": "Number"
+            }
+        ],
+        "data_source": "String"
+    },
+    {
+        "_id": "ObjectId",
+        "user_id": "ObjectId",
+        "description": "String",
+        "food_category": "String",
+        "ingredients": "String",
+        "nutrients": [
+            {
+                "nutrient_id": "String",
+                "nutrient_name": "String",
+                "unit_name": "String",
+                "value": "Number"
+            }
+        ],
+        "data_source": "String",
+        "created_at": "DateTime"
+    },
+    {
+        "_id": "ObjectId",
+        "user_id": "ObjectId",
+        "item_id": "ObjectId",
+        "is_custom": "Boolean",
+        "quantity": "Number",
+        "expiry_date": "DateTime",
+        "perish_level": "Number",
+        "added_at": "DateTime"
+    }
+]

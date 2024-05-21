@@ -3,15 +3,17 @@ import json
 from dotenv import load_dotenv
 import os
 
-
 load_dotenv()
 mongo_uri = os.getenv("MONGO_URI")
 api_key = os.getenv("USDA_API_KEY")
 
 def find_details(id):
-    response = requests.get("https://api.nal.usda.gov/fdc/v1/foods/search", params={"api_key":api_key, "fdc_id":id})
+    response = requests.get(f"https://api.nal.usda.gov/fdc/v1/food/{id}", params={"api_key": api_key})
     if response.status_code == 200:
-        print(response.text)
+        return response.json()
+    else:
+        print(f"Failed to fetch details: {response.status_code}")
+        return None
 
 def search_item(query, allWords=False, pageNumber=1, pageSize=5):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
@@ -45,7 +47,6 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=5):
         print(f"Failed to fetch data: {response.status_code}")
         return False
 
-
 def process_food_item(food_item):
     data_type = food_item.get("dataType", "").lower()
 
@@ -67,21 +68,23 @@ def process_food_item(food_item):
     ]
 
     specific_fields = {}
-    if data_type == "foundation" or data_type == "sr legacy":
-        specific_fields["ndbNumber"] = food_item.get("ndbNumber")
+    if data_type in ["foundation", "sr legacy"]:
+        specific_fields["foundation"] = {
+            "ndbNumber": food_item.get("ndbNumber")
+        }
     elif data_type == "branded":
-        specific_fields.update({
+        specific_fields["branded"] = {
             "brandOwner": food_item.get("brandOwner"),
             "ingredients": food_item.get("ingredients"),
             "marketCountry": food_item.get("marketCountry"),
             "packageWeight": food_item.get("packageWeight"),
             "servingSize": food_item.get("servingSize"),
             "servingSizeUnit": food_item.get("servingSizeUnit")
-        })
+        }
     elif data_type == "survey (fndds)":
-        specific_fields.update({
+        specific_fields["survey"] = {
             "foodCode": food_item.get("foodCode"),
-            "portion": food_item.get("foodPortions", []),
+            "portions": food_item.get("foodPortions", []),
             "finalFoodInputFoods": food_item.get("finalFoodInputFoods", []),
             "foodMeasures": [
                 {
@@ -92,21 +95,18 @@ def process_food_item(food_item):
                 }
                 for measure in food_item.get("foodMeasures", [])
             ]
-        })
+        }
 
-    return {**common_fields, **specific_fields}, nutrients
+    obj = {
+        **common_fields,
+        "nutrients": nutrients,
+        "measures": specific_fields
+    }
 
-foods, search_query = search_item('Apple juice', True, 1, 20)
-i=0
+    return obj
 
-def format_search_results(search_results):
-    formatted_results = []
-    for item in search_results:
-        common_specific, nutrients = process_food_item(item)
-        formatted_item = {**common_specific, "nutrients": nutrients}
-        formatted_results.append(formatted_item)
-    return formatted_results
+foods, search_query = search_item('chocolate milk', True, 1, 10)
 
-formatted_foods = format_search_results(foods)
-for food in formatted_foods:
-    print(json.dumps(food, indent=1))
+for food in foods:
+    processed_item = process_food_item(food)
+    print(json.dumps(processed_item, indent=2))
