@@ -1,11 +1,37 @@
-import requests
-import json
+import requests, json, os, pymongo
 from dotenv import load_dotenv
-import os
+from datetime import datetime
 
 load_dotenv()
 mongo_uri = os.getenv("MONGO_URI")
 api_key = os.getenv("USDA_API_KEY")
+
+client = pymongo.MongoClient(mongo_uri)
+# Send a ping to confirm a successful connection
+try:
+    client.admin.command('ping')
+    print("Pinged your deployment. You successfully connected to MongoDB!")
+except Exception as e:
+    print(e)
+
+db = client.fooding
+users_collection = db["users"]
+pantry_collection = db["pantry"]
+recipes_collection = db["recipes"]
+custom_items_collection = db["custom_items"]
+food_collection = db["food"]
+
+
+# INDEXING:
+users_collection.create_index("username", unique=True)
+pantry_collection.create_index([("user_id", 1), ("item_id", 1)])
+recipes_collection.create_index("user_id")
+custom_items_collection.create_index("user_id")
+food_collection.create_index("fdc_id", unique=True)
+
+print("Collections and indexes have been created.")
+test_user = '664d3882485b1f43c45fc3eb'
+
 
 def find_details(id):
     response = requests.get(f"https://api.nal.usda.gov/fdc/v1/food/{id}", params={"api_key": api_key})
@@ -105,8 +131,4 @@ def process_food_item(food_item):
 
     return obj
 
-foods, search_query = search_item('chocolate milk', True, 1, 10)
-
-for food in foods:
-    processed_item = process_food_item(food)
-    print(json.dumps(processed_item, indent=2))
+# foods, search_query = search_item('chocolate milk', True, 1, 10)
