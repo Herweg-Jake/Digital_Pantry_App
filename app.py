@@ -6,6 +6,16 @@ from forms import FoodSearchForm
 from Database import Database
 import os
 
+# DATATYPE KWARG
+# Branded, Foundation, Survey (FNDDS), SR Legacy
+# sortby: dataType.keyword, lowercaseDescription.keyword, fdcId, publishedDate
+# sortorder: asc, desc
+###
+# https://fdc.nal.usda.gov/data-documentation.html 
+# https://fdc.nal.usda.gov/faq.html 
+### USE ABRIDGED
+
+
 def getfooddata(foodList):
     formatted_foods = []
     for food_name, attributes in foodList.items():
