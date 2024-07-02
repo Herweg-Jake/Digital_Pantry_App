@@ -1,13 +1,20 @@
-import requests, os
-from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
+from pymongo import MongoClient
+from dotenv import load_dotenv
+import requests, os, bcrypt
 
 load_dotenv()
-mongo_uri = os.getenv("MONGO_URI")
+mongo_uri = os.getenv("mongo_uri")
 api_key = os.getenv("USDA_API_KEY")
 app = Flask(__name__)
-CORS(app)
+app.secret_key = os.getenv("SECRET_KEY")
+CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
+
+client = MongoClient(mongo_uri)
+db = client['fooding']
+users_collection = db.users
+pantry_collection = db.pantry
 
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
@@ -39,12 +46,13 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
             description = item.get('description')
             data_type = item.get('dataType')
             food_nutrients = item.get('foodNutrients', [])
+            filtered = [nutrient for nutrient in food_nutrients if nutrient['value'] > 0.5]
             
             common_info = {
                 'fdcId': fdc_id,
                 'description': description,
                 'dataType': data_type,
-                'foodNutrients': food_nutrients
+                'foodNutrients': filtered
             }
             
             if data_type == 'Branded':
@@ -103,6 +111,7 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
 
 
 
+
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query')
@@ -119,6 +128,108 @@ def search():
         return jsonify({"message": "No results found"}), 404
 
     return jsonify(sorted_items)
+
+@app.route('/add_to_pantry', methods=['POST'])
+def add_to_pantry():
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    item = request.json.get('item')
+    quantity = request.json.get('quantity')
+    expiryDate = request.json.get('expiryDate')
+
+    if not item or not quantity or not expiryDate:
+        return jsonify({"error": "Item, quantity, and expiry date are required"}), 400
+
+    pantry_item = {
+        "item": item,
+        "quantity": quantity,
+        "expiryDate": expiryDate
+    }
+
+    pantry_collection.update_one(
+        {"email": email},
+        {"$push": {"items": pantry_item}},
+        upsert=True
+    )
+
+    return jsonify({"message": "Item added to pantry"}), 200
+
+
+
+@app.route('/register', methods=['POST'])
+def register():
+    username = request.json.get('username')
+    email = request.json.get('email')
+    password = request.json.get('password')
+    weight = request.json.get('weight')
+    height = request.json.get('height')
+    age = request.json.get('age')
+    gender = request.json.get('gender')
+
+    if users_collection.find_one({"email": email}):
+        return jsonify({"error": "User already exists"}), 400
+
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+    user_data = {
+        "username": username,
+        "email": email,
+        "password": hashed_password,
+        "weight": weight,
+        "height": height,
+        "age": age,
+        "gender": gender
+    }
+
+    users_collection.insert_one(user_data)
+
+    # Create pantry for the user
+    pantry_data = {
+        "email": email,
+        "items": []
+    }
+    pantry_collection.insert_one(pantry_data)
+
+    return jsonify({"message": "User registered successfully"}), 201
+
+@app.route('/login', methods=['POST'])
+def login():
+    email = request.json.get('email')
+    password = request.json.get('password')
+    user = users_collection.find_one({"email": email})
+
+    if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
+        session['user'] = {"email": email}
+        return jsonify({"message": "Logged in successfully"}), 200
+
+    return jsonify({"error": "Invalid credentials"}), 401
+
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user', None)
+    return jsonify({"message": "Logged out successfully"}), 200
+
+@app.route('/current_user', methods=['GET'])
+def current_user():
+    user = session.get('user')
+    if user:
+        return jsonify(user), 200
+    return jsonify({"error": "Not logged in"}), 401
+
+@app.route('/pantry', methods=['GET'])
+def get_pantry():
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    pantry = pantry_collection.find_one({"email": email})
+    print(len(pantry))
+    if pantry:
+        return jsonify(pantry.get("items", [])), 200
+
+    return jsonify({"error": "Pantry not found"}), 404
+
 
 if __name__ == '__main__':
     app.run(debug=True)
