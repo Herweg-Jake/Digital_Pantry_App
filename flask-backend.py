@@ -16,6 +16,11 @@ db = client['fooding']
 users_collection = db.users
 pantry_collection = db.pantry
 
+
+# This function has a bunch of optional parameters for testing
+# the main function is to query the fdcapi based on the input query
+# it will return a dictionary of the food items sorted by their datatype
+# 
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {
@@ -111,7 +116,8 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
 
 
 
-
+# this is the Search.js back end result, it will use search_item and return
+# the necessary data for the front end reuslts
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query')
@@ -129,8 +135,10 @@ def search():
 
     return jsonify(sorted_items)
 
+# pantry.js from search will add new item to pantry
 @app.route('/add_to_pantry', methods=['POST'])
 def add_to_pantry():
+    # uses the user's email to get their pantry
     email = session.get('user', {}).get('email')
     if not email:
         return jsonify({"error": "Not logged in"}), 401
@@ -157,7 +165,7 @@ def add_to_pantry():
     return jsonify({"message": "Item added to pantry"}), 200
 
 
-
+# the registering of new users, each should be passed info
 @app.route('/register', methods=['POST'])
 def register():
     username = request.json.get('username')
@@ -193,6 +201,8 @@ def register():
 
     return jsonify({"message": "User registered successfully"}), 201
 
+
+# returns the session log in as the user, a bit buggin need to fix more
 @app.route('/login', methods=['POST'])
 def login():
     email = request.json.get('email')
@@ -205,11 +215,14 @@ def login():
 
     return jsonify({"error": "Invalid credentials"}), 401
 
+# dont even use this lol
 @app.route('/logout', methods=['POST'])
 def logout():
     session.pop('user', None)
     return jsonify({"message": "Logged out successfully"}), 200
 
+# this is used when the front needs to fetch the current user
+# authcontext.js uses this mainly
 @app.route('/current_user', methods=['GET'])
 def current_user():
     user = session.get('user')
@@ -217,6 +230,7 @@ def current_user():
         return jsonify(user), 200
     return jsonify({"error": "Not logged in"}), 401
 
+# basically add to pantry but just returns list
 @app.route('/pantry', methods=['GET'])
 def get_pantry():
     email = session.get('user', {}).get('email')
