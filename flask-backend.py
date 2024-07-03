@@ -4,19 +4,56 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 import requests, os, bcrypt
 
-load_dotenv()
-mongo_uri = os.getenv("mongo_uri")
-api_key = os.getenv("USDA_API_KEY")
+
 app = Flask(__name__)
-app.secret_key = os.getenv("SECRET_KEY")
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
 
+
+load_dotenv()
+mongo_uri = os.getenv("mongo_uri")
 client = MongoClient(mongo_uri)
-db = client['fooding']
+api_key = os.getenv("USDA_API_KEY")
+
+
+db = client.fooding
 users_collection = db.users
 pantry_collection = db.pantry
+foods_collection = db.food
 
 
+# Haven't finished this quite yet
+# adds a new food to foods_collection
+@app.route('/create_new_food', methods=['POST'])
+def create_item():
+    name = request.json.get('name')
+    weight = request.json.get('weight')
+    size = request.json.get('size')
+    nut_facts = request.json.get('nut_facts')
+    if not name or not weight or not size or not nut_facts:
+        return jsonify({"error": "Missing input variables"}), 401
+    
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # creates the food item based
+    food_item = {
+        "item": name,
+        "weight": int(weight),
+        "measure": size,
+        "nut_facts": nut_facts
+    }
+
+    # adds to mongodb user food collection
+    foods_collection.update_one(
+        {"email": email},
+        {"$push": {"items": food_item}},
+        upsert=True
+    )
+
+    return jsonify({"message": "Food added to user's custom foods"}), 200
+
+# py file for api stuff
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {
@@ -91,6 +128,8 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
     else:
         return None
 
+# returns filtered search results
+# TODO add custom item filter
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query')
@@ -108,6 +147,7 @@ def search():
 
     return jsonify(sorted_items)
 
+# updates based on the '-' button
 @app.route('/add_to_pantry', methods=['POST'])
 def add_to_pantry():
     email = session.get('user', {}).get('email')
@@ -143,6 +183,7 @@ def add_to_pantry():
 
     return jsonify({"message": "Item added to pantry"}), 200
 
+# updates based on the '-' button
 @app.route('/update_quantity', methods=['POST'])
 def update_quantity():
     email = session.get('user', {}).get('email')
@@ -174,6 +215,7 @@ def update_quantity():
 
     return jsonify({"message": "Quantity updated successfully"}), 200
 
+#removes item from the pantry
 @app.route('/remove_item', methods=['POST'])
 def remove_item():
     email = session.get('user', {}).get('email')
@@ -191,7 +233,6 @@ def remove_item():
     )
 
     return jsonify({"message": "Item removed from pantry"}), 200
-
 
 # the registering of new users, each should be passed info
 @app.route('/register', methods=['POST'])
@@ -271,7 +312,6 @@ def get_pantry():
         return jsonify(pantry.get("items", [])), 200
 
     return jsonify({"error": "Pantry not found"}), 404
-
 
 
 if __name__ == '__main__':
