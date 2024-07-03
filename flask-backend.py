@@ -17,10 +17,6 @@ users_collection = db.users
 pantry_collection = db.pantry
 
 
-# This function has a bunch of optional parameters for testing
-# the main function is to query the fdcapi based on the input query
-# it will return a dictionary of the food items sorted by their datatype
-# 
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
     params = {
@@ -43,8 +39,6 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
         
         branded_items = []
         survey_items = []
-        sr_legacy_items = []
-        foundation_items = []
 
         for item in foods:
             fdc_id = item.get('fdcId')
@@ -81,43 +75,22 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
                     'additionalDescriptions': item.get('additionalDescriptions'),
                     'foodCategory': item.get('foodCategory'),
                     'foodCode': item.get('foodCode'),
-                    'publishedDate': item.get('publishedDate')
-                })
-            elif data_type == 'SR Legacy':
-                sr_legacy_items.append({
-                    **common_info,
-                    'scientificName': item.get('scientificName'),
-                    'foodCategory': item.get('foodCategory'),
                     'publishedDate': item.get('publishedDate'),
-                    'ndbNumber': item.get('ndbNumber')
-                })
-            elif data_type == 'Foundation':
-                foundation_items.append({
-                    **common_info,
-                    'scientificName': item.get('scientificName'),
-                    'foodCategory': item.get('foodCategory'),
-                    'publishedDate': item.get('publishedDate'),
-                    'ndbNumber': item.get('ndbNumber'),
-                    'mostRecentAcquisitionDate': item.get('mostRecentAcquisitionDate')
+                    'finalFoodInputFoods': item.get('finalFoodInputFoods', []),
+                    'foodMeasures': item.get('foodMeasures', [])
                 })
             else:
                 print(f"Unknown data type: {data_type}")
 
         sorted_items = {
             "Branded": branded_items,
-            "Survey": survey_items,
-            "SR_Legacy": sr_legacy_items,
-            "Foundation": foundation_items
+            "Survey": survey_items
         }
         
         return sorted_items
     else:
         return None
 
-
-
-# this is the Search.js back end result, it will use search_item and return
-# the necessary data for the front end reuslts
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query')
@@ -135,10 +108,8 @@ def search():
 
     return jsonify(sorted_items)
 
-# pantry.js from search will add new item to pantry
 @app.route('/add_to_pantry', methods=['POST'])
 def add_to_pantry():
-    # uses the user's email to get their pantry
     email = session.get('user', {}).get('email')
     if not email:
         return jsonify({"error": "Not logged in"}), 401
@@ -146,14 +117,22 @@ def add_to_pantry():
     item = request.json.get('item')
     quantity = request.json.get('quantity')
     expiryDate = request.json.get('expiryDate')
+    measure = request.json.get('measure')
 
-    if not item or not quantity or not expiryDate:
-        return jsonify({"error": "Item, quantity, and expiry date are required"}), 400
+    if not item or not quantity or not expiryDate or not measure:
+        print("Missing data:", {
+            "item": item,
+            "quantity": quantity,
+            "expiryDate": expiryDate,
+            "measure": measure
+        })
+        return jsonify({"error": "Item, quantity, measure, and expiry date are required"}), 400
 
     pantry_item = {
         "item": item,
-        "quantity": quantity,
-        "expiryDate": expiryDate
+        "quantity": int(quantity),
+        "expiryDate": expiryDate,
+        "measure": measure
     }
 
     pantry_collection.update_one(
@@ -163,6 +142,55 @@ def add_to_pantry():
     )
 
     return jsonify({"message": "Item added to pantry"}), 200
+
+@app.route('/update_quantity', methods=['POST'])
+def update_quantity():
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    item = request.json.get('item')
+    increment = request.json.get('increment')
+
+    if not item or increment is None:
+        return jsonify({"error": "Item and increment flag are required"}), 400
+
+    pantry = pantry_collection.find_one({"email": email})
+    if not pantry:
+        return jsonify({"error": "Pantry not found"}), 404
+
+    for pantry_item in pantry.get('items', []):
+        if pantry_item['item']['fdcId'] == item['fdcId']:
+            new_quantity = pantry_item['quantity'] + (1 if increment else -1)
+            if new_quantity <= 0:
+                return jsonify({"error": "Quantity cannot be less than 1"}), 400
+            pantry_item['quantity'] = new_quantity
+            break
+
+    pantry_collection.update_one(
+        {"email": email},
+        {"$set": {"items": pantry['items']}}
+    )
+
+    return jsonify({"message": "Quantity updated successfully"}), 200
+
+@app.route('/remove_item', methods=['POST'])
+def remove_item():
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    item = request.json.get('item')
+
+    if not item:
+        return jsonify({"error": "Item is required"}), 400
+
+    pantry_collection.update_one(
+        {"email": email},
+        {"$pull": {"items": {"item.fdcId": item['fdcId']}}}
+    )
+
+    return jsonify({"message": "Item removed from pantry"}), 200
 
 
 # the registering of new users, each should be passed info
@@ -243,6 +271,7 @@ def get_pantry():
         return jsonify(pantry.get("items", [])), 200
 
     return jsonify({"error": "Pantry not found"}), 404
+
 
 
 if __name__ == '__main__':
