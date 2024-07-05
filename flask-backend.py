@@ -7,7 +7,7 @@ import requests, os, bcrypt
 
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
-
+app.secret_key = os.environ.get('SECRET_KEY')
 
 load_dotenv()
 mongo_uri = os.getenv("mongo_uri")
@@ -21,37 +21,6 @@ pantry_collection = db.pantry
 foods_collection = db.food
 
 
-# Haven't finished this quite yet
-# adds a new food to foods_collection
-@app.route('/create_new_food', methods=['POST'])
-def create_item():
-    name = request.json.get('name')
-    weight = request.json.get('weight')
-    size = request.json.get('size')
-    nut_facts = request.json.get('nut_facts')
-    if not name or not weight or not size or not nut_facts:
-        return jsonify({"error": "Missing input variables"}), 401
-    
-    email = session.get('user', {}).get('email')
-    if not email:
-        return jsonify({"error": "Not logged in"}), 401
-
-    # creates the food item based
-    food_item = {
-        "item": name,
-        "weight": int(weight),
-        "measure": size,
-        "nut_facts": nut_facts
-    }
-
-    # adds to mongodb user food collection
-    foods_collection.update_one(
-        {"email": email},
-        {"$push": {"items": food_item}},
-        upsert=True
-    )
-
-    return jsonify({"message": "Food added to user's custom foods"}), 200
 
 # py file for api stuff
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
@@ -128,8 +97,53 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
     else:
         return None
 
-# returns filtered search results
-# TODO add custom item filter
+# TODO fix the quantity amount, the user should be able to be prompted for expiry, cost and etc from the addition instead of auto-push
+@app.route('/create_new_food', methods=['POST'])
+def create_item():
+    name = request.json.get('name')
+    serving_size = request.json.get('servingSize')
+    quantity_per_unit = request.json.get('quantityPerUnit')
+    mandatory_nutrients = request.json.get('mandatoryNutrients')
+    optional_nutrients = request.json.get('optionalNutrients', [])
+    ingredients = request.json.get('ingredients', [])
+    expiry_date = request.json.get('expiryDate')
+
+    if not name or not serving_size or not quantity_per_unit or not mandatory_nutrients:
+        return jsonify({"error": "Missing input variables"}), 401
+    
+    email = session.get('user', {}).get('email')
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Ensure mandatory_nutrients and optional_nutrients are lists
+    if not isinstance(mandatory_nutrients, list):
+        mandatory_nutrients = [mandatory_nutrients]
+    if not isinstance(optional_nutrients, list):
+        optional_nutrients = [optional_nutrients]
+
+    # Combine mandatory and optional nutrients
+    food_nutrients = mandatory_nutrients + optional_nutrients
+
+    # Create the food item
+    food_item = {
+        "description": name,
+        "serving_size": serving_size,
+        "quantity_per_unit": quantity_per_unit,
+        "foodNutrients": food_nutrients,
+        "ingredients": ingredients,
+        "dataType": "Custom"
+    }
+
+    # Add the food item to the user's custom foods collection
+    foods_collection.update_one(
+        {"email": email},
+        {"$push": {"items": food_item}},
+        upsert=True
+    )
+
+    return jsonify({"message": "Food added to user's custom foods", "food_item": food_item}), 200
+
+
 @app.route('/search', methods=['GET'])
 def search():
     query = request.args.get('query')
@@ -141,11 +155,30 @@ def search():
     if not query:
         return jsonify({"error": "Query parameter is required"}), 400
 
-    sorted_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType=data_type)
-    if sorted_items is None:
-        return jsonify({"message": "No results found"}), 404
+    sorted_items = {}
+    if data_type == "Custom":
+        email = session.get('user', {}).get('email')
+        custom_items = []
+        if email:
+            custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+            custom_items = custom_items.get("items", [])
+        sorted_items["Custom"] = custom_items
+    else:
+        sorted_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType=data_type)
+        if sorted_items is None:
+            sorted_items = {}
+
+        # Fetch custom items
+        email = session.get('user', {}).get('email')
+        custom_items = []
+        if email:
+            custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+            custom_items = custom_items.get("items", [])
+
+        sorted_items["Custom"] = custom_items
 
     return jsonify(sorted_items)
+
 
 # updates based on the '-' button
 @app.route('/add_to_pantry', methods=['POST'])
