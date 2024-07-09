@@ -21,6 +21,16 @@ pantry_collection = db.pantry
 foods_collection = db.food
 
 
+collection_item = {
+    "email": "email",
+    "items": [],
+}
+# users: user info would be in items
+# recipes: recipes in items
+# pantry: pantry items in items
+# foods: custom food items in items
+
+
 
 # py file for api stuff
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
