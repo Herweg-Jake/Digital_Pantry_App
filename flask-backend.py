@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
-from pymongo import MongoClient
+from pymongo import MongoClient, errors
 from dotenv import load_dotenv
-import requests, os, bcrypt
+import requests, os
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
@@ -23,118 +23,54 @@ foods_collection = db.food
 
 
 def itemify(email):
-    citem = {
+    return {
         "email": email,
         "items": [],
     }
-    return citem
 
-# users: user info would be in items
-# recipes: recipes in items
-# pantry: pantry items in items
-# foods: custom food items in items
-
-@app.route('/oauth2callback', methods=['POST'])
-def oauth2callback():
-    code = request.json.get('code')
-    client_id = os.environ.get('client_id')
-    client_secret = os.environ.get('client_secret')
-    redirect_uri = "http://localhost:3000/oauth2callback"
-
-    token_url = "https://oauth2.googleapis.com/token"
-    token_data = {
-        "code": code,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "redirect_uri": redirect_uri,
-        "grant_type": "authorization_code"
-    }
-
-    token_response = requests.post(token_url, data=token_data)
-    token_response_data = token_response.json()
-
-    if "id_token" in token_response_data:
-        id_token = token_response_data["id_token"]
-        user_info_url = "https://www.googleapis.com/oauth2/v3/tokeninfo"
-        user_info_params = {"id_token": id_token}
-        user_info_response = requests.get(user_info_url, params=user_info_params)
-        user_info = user_info_response.json()
-        print(user_info)
-
-        email = user_info['email']
-        user = users_collection.find_one({"email": email})
-        if not user:
-            user_data = {
-                "username": user_info.get('name', email.split('@')[0]),
-                "email": email,
-                "google_id": user_info['sub']
-            }
-            users_collection.insert_one(user_data)
-        session['user'] = {"email": email}
-        return jsonify({"message": "Logged in successfully"}), 200
-    else:
-        return jsonify({"error": "Invalid token response"}), 400
-
-@app.route('/current_user', methods=['GET'])
-def current_user():
+def get_user_email():
     user = session.get('user')
+    print(user)
     if user:
-        return jsonify(user), 200
-    return jsonify({"error": "Not logged in"}), 401
+        return user.get('email')
+    return None
 
-"""
-TODO
-pantry_collection.update_one(
-        {"email": email},
-        {"$push": {"items": pantry_item}},
-        upsert=True
-    )
-We need to functionalize this for adding maybe
-"""
-
-
-# py file for api stuff
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
-    params = {
-        "query": query,
-        "api_key": api_key,
-        "pageSize": pageSize,
-        "pageNumber": pageNumber,
-        "requireAllWords": allWords,
-        "DataType": DataType,
-        "format": format
-    }
-    response = requests.get(base_url, params=params)
+    data_types = DataType if isinstance(DataType, list) else [DataType]
 
-    if response.status_code != 200:
-        return False
+    all_items = []
+    for data_type in data_types:
+        params = {
+            "query": query,
+            "api_key": api_key,
+            "pageSize": pageSize,
+            "pageNumber": pageNumber,
+            "requireAllWords": allWords,
+            "DataType": data_type,
+            "format": format
+        }
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get('totalHits') > 0:
+                all_items.extend(data.get('foods', []))
 
-    data = response.json()
-    if data.get('totalHits') == 0:
-        print('TODO -- FIX TOTALHITS')
-        return None
-    
     food_items = []
-    unsorted_foods = data.get('foods', [])
-    email = session.get('user', {}).get('email')
-    if email:
-        custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
-        custom_items = custom_items.get("items", [])
-    for item in unsorted_foods:
+    for item in all_items:
         fdc_id = item.get('fdcId')
         description = item.get('description')
         data_type = item.get('dataType')
         food_nutrients = item.get('foodNutrients', [])
         filtered = [nutrient for nutrient in food_nutrients if nutrient['value'] > 0.5]
-        
+
         common_info = {
             'fdcId': fdc_id,
             'description': description,
             'dataType': data_type,
             'foodNutrients': filtered
         }
-        
+
         if data_type == 'Branded':
             subinfo = {
                 'brandOwner': item.get('brandOwner'),
@@ -158,55 +94,117 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
                 'finalFoodInputFoods': item.get('finalFoodInputFoods', []),
                 'foodMeasures': item.get('foodMeasures', [])
             }
-    
-    return common_info + subinfo
 
-# TODO fix the quantity amount, the user should be able to be prompted for expiry, cost and etc from the addition instead of auto-push
-@app.route('/create_new_food', methods=['POST'])
-def create_item():
-    name = request.json.get('name')
-    serving_size = request.json.get('servingSize')
-    quantity_per_unit = request.json.get('quantityPerUnit')
-    mandatory_nutrients = request.json.get('mandatoryNutrients')
-    optional_nutrients = request.json.get('optionalNutrients', [])
-    ingredients = request.json.get('ingredients', [])
-    expiry_date = request.json.get('expiryDate')
+        food_item = {**common_info, **subinfo}
+        food_items.append(food_item)
 
-    if not name or not serving_size or not quantity_per_unit or not mandatory_nutrients:
-        return jsonify({"error": "Missing input variables"}), 401
-    
-    email = session.get('user', {}).get('email')
+    return food_items
+
+# users: user info would be in items
+# recipes: recipes in items
+# pantry: pantry items in items
+# foods: custom food items in items
+
+@app.route('/oauth2callback', methods=['POST'])
+def oauth2callback():
+    code = request.json.get('code')
+
+    client_id = os.getenv("client_id")
+    client_secret = os.getenv("client_secret")
+    redirect_uri = "http://localhost:3000/oauth2callback"
+
+    token_url = "https://oauth2.googleapis.com/token"
+    token_data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+
+    token_response = requests.post(token_url, data=token_data)
+    token_response_data = token_response.json()
+
+    if "id_token" in token_response_data:
+        id_token = token_response_data["id_token"]
+        user_info_url = "https://www.googleapis.com/oauth2/v3/tokeninfo"
+        user_info_params = {"id_token": id_token}
+        user_info_response = requests.get(user_info_url, params=user_info_params)
+        user_info = user_info_response.json()
+
+        email = user_info['email']
+        user = users_collection.find_one({"email": email})
+        if not user:
+            user_data = {
+                "username": user_info.get('name', email.split('@')[0]),
+                "email": email,
+                "google_id": user_info['sub'],
+                "birthday": None,
+                "height": None,
+                "weight": None,
+                "gender": None
+            }
+            try:
+                users_collection.insert_one(user_data)
+                pantry_data = itemify(email)
+                db.pantry.insert_one(pantry_data)
+            except errors.DuplicateKeyError:
+                print("Duplicate key error: Username already exists.")
+        else:
+            session['user'] = {"email": email}
+        session['user'] = {"email": email}
+        return jsonify({"message": "Logged in successfully"}), 200
+    else:
+        return jsonify({"error": "Invalid token response"}), 400
+
+@app.route('/current_user', methods=['GET'])
+def current_user():
+    user = session.get('user')
+    print(user)
+    if user:
+        user_data = users_collection.find_one({"email": user['email']}, {"_id": 0})
+        return jsonify(user_data), 200
+    return jsonify({"error": "Not logged in"}), 401
+
+@app.route('/onboarding', methods=['POST'])
+def onboarding():
+    email = get_user_email()
     if not email:
         return jsonify({"error": "Not logged in"}), 401
 
-    # Ensure mandatory_nutrients and optional_nutrients are lists
-    if not isinstance(mandatory_nutrients, list):
-        mandatory_nutrients = [mandatory_nutrients]
-    if not isinstance(optional_nutrients, list):
-        optional_nutrients = [optional_nutrients]
+    birthday = request.json.get('birthday')
+    height = request.json.get('height')
+    weight = request.json.get('weight')
+    gender = request.json.get('gender')
 
-    # Combine mandatory and optional nutrients
-    food_nutrients = mandatory_nutrients + optional_nutrients
+    print(f"Onboarding data: {email}, {birthday}, {height}, {weight}, {gender}")
 
-    # Create the food item
-    food_item = {
-        "description": name,
-        "serving_size": serving_size,
-        "quantity_per_unit": quantity_per_unit,
-        "foodNutrients": food_nutrients,
-        "ingredients": ingredients,
-        "dataType": "Custom"
-    }
-
-    # Add the food item to the user's custom foods collection
-    foods_collection.update_one(
+    users_collection.update_one(
         {"email": email},
-        {"$push": {"items": food_item}},
-        upsert=True
+        {"$set": {
+            "birthday": birthday,
+            "height": height,
+            "weight": weight,
+            "gender": gender
+        }}
     )
 
-    return jsonify({"message": "Food added to user's custom foods", "food_item": food_item}), 200
+    return jsonify({"message": "Onboarding completed"}), 200
 
+@app.route('/logout', methods=['POST'])
+def logout():
+    session.pop('user', None)
+    return jsonify({"message": "Logged out successfully"}), 200
+
+@app.route('/pantry', methods=['GET'])
+def get_pantry():
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    pantry = db.pantry.find_one({"email": email}, {"_id": 0, "items": 1})
+    print(pantry)
+    return jsonify(pantry["items"] if pantry else [])
 
 @app.route('/search', methods=['GET'])
 def search():
@@ -214,192 +212,115 @@ def search():
     all_words = request.args.get('allWords', 'false').lower() == 'true'
     page_number = int(request.args.get('pageNumber', 1))
     page_size = int(request.args.get('pageSize', 20))
-    data_type = request.args.get('DataType', None)
+    data_type = request.args.get('dataType')
 
     if not query:
         return jsonify({"error": "Query parameter is required"}), 400
-
-    sorted_items = {}
-    if data_type == "Custom":
-        email = session.get('user', {}).get('email')
-        custom_items = []
-        if email:
-            custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
-            custom_items = custom_items.get("items", [])
-        sorted_items["Custom"] = custom_items
-    else:
-        sorted_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType=data_type)
-        if sorted_items is None:
-            sorted_items = {}
-
-        email = session.get('user', {}).get('email')
-        custom_items = []
-        if email:
-            custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
-            custom_items = custom_items.get("items", [])
-
-        sorted_items["Custom"] = custom_items
-
-    return jsonify(sorted_items)
-
-
-# updates based on the '-' button
-@app.route('/add_to_pantry', methods=['POST'])
-def add_to_pantry():
-    email = session.get('user', {}).get('email')
+    email = get_user_email()
     if not email:
         return jsonify({"error": "Not logged in"}), 401
 
-    item = request.json.get('item')
-    quantity = request.json.get('quantity')
-    expiryDate = request.json.get('expiryDate')
-    measure = request.json.get('measure')
+    sorted_items = {"Custom": [], "Branded": [], "Survey": []}
+    custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+    custom_items = custom_items.get("items", [])
+    sorted_items["Custom"].extend(custom_items)
 
-    if not item or not quantity or not expiryDate or not measure:
-        print("Missing data:", {
-            "item": item,
-            "quantity": quantity,
-            "expiryDate": expiryDate,
-            "measure": measure
-        })
-        return jsonify({"error": "Item, quantity, measure, and expiry date are required"}), 400
+    if data_type == "ALL" or data_type in ["Branded", "Survey"]:
+        usda_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType=data_type)
+        if usda_items:
+            for item in usda_items:
+                if item['dataType'] == 'Branded':
+                    sorted_items["Branded"].append(item)
+                elif item['dataType'] == 'Survey (FNDDS)':
+                    sorted_items["Survey"].append(item)
 
-    pantry_item = {
-        "item": item,
-        "quantity": int(quantity),
-        "expiryDate": expiryDate,
-        "measure": measure
+    return jsonify(sorted_items)
+
+@app.route('/create_new_food', methods=['POST'])
+def create_item():
+    data = request.get_json()
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Validate required fields
+    required_fields = ['description', 'serving_size', 'quantity_per_unit', 'foodNutrients']
+    if any(field not in data for field in required_fields):
+        return jsonify({"error": "Missing fields"}), 400
+
+    # Add to database
+    new_food_item = {
+        "description": data['description'],
+        "serving_size": data['serving_size'],
+        "quantity_per_unit": data['quantity_per_unit'],
+        "foodNutrients": data['foodNutrients'],
+        "ingredients": data.get('ingredients', []),
+        "dataType": "Custom"
     }
-
-    pantry_collection.update_one(
+    result = foods_collection.update_one(
         {"email": email},
-        {"$push": {"items": pantry_item}},
+        {"$push": {"items": new_food_item}},
         upsert=True
     )
+    
+    # Return the newly created food item for further actions
+    return jsonify({"message": "Food item created", "food_item": new_food_item}), 200
 
+@app.route('/add_to_pantry', methods=['POST'])
+def add_to_pantry():
+    data = request.get_json()
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    # Assuming 'item' contains all the necessary data
+    new_pantry_item = {
+        "item": data['item'],
+        "quantity": data['quantity'],
+        "expiryDate": data['expiryDate'],
+        "cost": data['cost']
+    }
+    
+    db.pantry.update_one(
+        {"email": email},
+        {"$push": {"items": new_pantry_item}},
+        upsert=True
+    )
+    
     return jsonify({"message": "Item added to pantry"}), 200
 
-# updates based on the '-' button
+
 @app.route('/update_quantity', methods=['POST'])
 def update_quantity():
-    email = session.get('user', {}).get('email')
+    email = get_user_email()
     if not email:
         return jsonify({"error": "Not logged in"}), 401
 
     item = request.json.get('item')
     increment = request.json.get('increment')
 
-    if not item or increment is None:
-        return jsonify({"error": "Item and increment flag are required"}), 400
-
-    pantry = pantry_collection.find_one({"email": email})
-    if not pantry:
-        return jsonify({"error": "Pantry not found"}), 404
-
-    for pantry_item in pantry.get('items', []):
-        if pantry_item['item']['fdcId'] == item['fdcId']:
-            new_quantity = pantry_item['quantity'] + (1 if increment else -1)
-            if new_quantity <= 0:
-                return jsonify({"error": "Quantity cannot be less than 1"}), 400
-            pantry_item['quantity'] = new_quantity
-            break
-
-    pantry_collection.update_one(
-        {"email": email},
-        {"$set": {"items": pantry['items']}}
+    db.pantry.update_one(
+        {"email": email, "items.item.description": item["description"]},
+        {"$inc": {"items.$.quantity": 1 if increment else -1}}
     )
 
     return jsonify({"message": "Quantity updated successfully"}), 200
 
-#removes item from the pantry
 @app.route('/remove_item', methods=['POST'])
 def remove_item():
-    email = session.get('user', {}).get('email')
+    email = get_user_email()
     if not email:
         return jsonify({"error": "Not logged in"}), 401
 
     item = request.json.get('item')
 
-    if not item:
-        return jsonify({"error": "Item is required"}), 400
-
-    pantry_collection.update_one(
+    db.pantry.update_one(
         {"email": email},
-        {"$pull": {"items": {"item.fdcId": item['fdcId']}}}
+        {"$pull": {"items": {"item.description": item["description"]}}}
     )
 
     return jsonify({"message": "Item removed from pantry"}), 200
 
-# the registering of new users, each should be passed info
-@app.route('/register', methods=['POST'])
-def register():
-    username = request.json.get('username')
-    email = request.json.get('email')
-    password = request.json.get('password')
-    weight = request.json.get('weight')
-    height = request.json.get('height')
-    age = request.json.get('age')
-    gender = request.json.get('gender')
-
-    if users_collection.find_one({"email": email}):
-        return jsonify({"error": "User already exists"}), 400
-
-    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
-    user_data = {
-        "username": username,
-        "email": email,
-        "password": hashed_password,
-        "weight": weight,
-        "height": height,
-        "age": age,
-        "gender": gender
-    }
-
-    users_collection.insert_one(user_data)
-
-    # Create pantry for the user
-    pantry_data = {
-        "email": email,
-        "items": []
-    }
-    pantry_collection.insert_one(pantry_data)
-
-    return jsonify({"message": "User registered successfully"}), 201
-
-
-# returns the session log in as the user, a bit buggin need to fix more
-@app.route('/login', methods=['POST'])
-def login():
-    email = request.json.get('email')
-    password = request.json.get('password')
-    user = users_collection.find_one({"email": email})
-
-    if user and bcrypt.checkpw(password.encode('utf-8'), user['password']):
-        session['user'] = {"email": email}
-        return jsonify({"message": "Logged in successfully"}), 200
-
-    return jsonify({"error": "Invalid credentials"}), 401
-
-# dont even use this lol
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.pop('user', None)
-    return jsonify({"message": "Logged out successfully"}), 200
-
-
-# basically add to pantry but just returns list
-@app.route('/pantry', methods=['GET'])
-def get_pantry():
-    email = session.get('user', {}).get('email')
-    if not email:
-        return jsonify({"error": "Not logged in"}), 401
-
-    pantry = pantry_collection.find_one({"email": email})
-    print(len(pantry))
-    if pantry:
-        return jsonify(pantry.get("items", [])), 200
-
-    return jsonify({"error": "Pantry not found"}), 404
 
 
 if __name__ == '__main__':
