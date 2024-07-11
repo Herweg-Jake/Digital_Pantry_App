@@ -3,13 +3,14 @@ from flask_cors import CORS
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import requests, os, bcrypt
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
 
+load_dotenv()
 app = Flask(__name__)
 CORS(app, supports_credentials=True, origins=["http://localhost:3000"])
 app.secret_key = os.environ.get('SECRET_KEY')
-
-load_dotenv()
 mongo_uri = os.getenv("mongo_uri")
 client = MongoClient(mongo_uri)
 api_key = os.getenv("USDA_API_KEY")
@@ -21,15 +22,75 @@ pantry_collection = db.pantry
 foods_collection = db.food
 
 
-collection_item = {
-    "email": "email",
-    "items": [],
-}
+def itemify(email):
+    citem = {
+        "email": email,
+        "items": [],
+    }
+    return citem
+
 # users: user info would be in items
 # recipes: recipes in items
 # pantry: pantry items in items
 # foods: custom food items in items
 
+@app.route('/oauth2callback', methods=['POST'])
+def oauth2callback():
+    code = request.json.get('code')
+    client_id = os.environ.get('client_id')
+    client_secret = os.environ.get('client_secret')
+    redirect_uri = "http://localhost:3000/oauth2callback"
+
+    token_url = "https://oauth2.googleapis.com/token"
+    token_data = {
+        "code": code,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "grant_type": "authorization_code"
+    }
+
+    token_response = requests.post(token_url, data=token_data)
+    token_response_data = token_response.json()
+
+    if "id_token" in token_response_data:
+        id_token = token_response_data["id_token"]
+        user_info_url = "https://www.googleapis.com/oauth2/v3/tokeninfo"
+        user_info_params = {"id_token": id_token}
+        user_info_response = requests.get(user_info_url, params=user_info_params)
+        user_info = user_info_response.json()
+        print(user_info)
+
+        email = user_info['email']
+        user = users_collection.find_one({"email": email})
+        if not user:
+            user_data = {
+                "username": user_info.get('name', email.split('@')[0]),
+                "email": email,
+                "google_id": user_info['sub']
+            }
+            users_collection.insert_one(user_data)
+        session['user'] = {"email": email}
+        return jsonify({"message": "Logged in successfully"}), 200
+    else:
+        return jsonify({"error": "Invalid token response"}), 400
+
+@app.route('/current_user', methods=['GET'])
+def current_user():
+    user = session.get('user')
+    if user:
+        return jsonify(user), 200
+    return jsonify({"error": "Not logged in"}), 401
+
+"""
+TODO
+pantry_collection.update_one(
+        {"email": email},
+        {"$push": {"items": pantry_item}},
+        upsert=True
+    )
+We need to functionalize this for adding maybe
+"""
 
 
 # py file for api stuff
@@ -46,66 +107,59 @@ def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None,
     }
     response = requests.get(base_url, params=params)
 
-    if response.status_code == 200:
-        data = response.json()
-        if data.get('totalHits') == 0:
-            return None
-        
-        foods = data.get('foods', [])
-        
-        branded_items = []
-        survey_items = []
+    if response.status_code != 200:
+        return False
 
-        for item in foods:
-            fdc_id = item.get('fdcId')
-            description = item.get('description')
-            data_type = item.get('dataType')
-            food_nutrients = item.get('foodNutrients', [])
-            filtered = [nutrient for nutrient in food_nutrients if nutrient['value'] > 0.5]
-            
-            common_info = {
-                'fdcId': fdc_id,
-                'description': description,
-                'dataType': data_type,
-                'foodNutrients': filtered
-            }
-            
-            if data_type == 'Branded':
-                branded_items.append({
-                    **common_info,
-                    'brandOwner': item.get('brandOwner'),
-                    'brandName': item.get('brandName'),
-                    'ingredients': item.get('ingredients'),
-                    'servingSize': item.get('servingSize'),
-                    'servingSizeUnit': item.get('servingSizeUnit'),
-                    'householdServingFullText': item.get('householdServingFullText'),
-                    'gtinUpc': item.get('gtinUpc'),
-                    'foodCategory': item.get('foodCategory'),
-                    'packageWeight': item.get('packageWeight'),
-                    'publishedDate': item.get('publishedDate'),
-                    'modifiedDate': item.get('modifiedDate')
-                })
-            elif data_type == 'Survey (FNDDS)':
-                survey_items.append({
-                    **common_info,
-                    'additionalDescriptions': item.get('additionalDescriptions'),
-                    'foodCategory': item.get('foodCategory'),
-                    'foodCode': item.get('foodCode'),
-                    'publishedDate': item.get('publishedDate'),
-                    'finalFoodInputFoods': item.get('finalFoodInputFoods', []),
-                    'foodMeasures': item.get('foodMeasures', [])
-                })
-            else:
-                print(f"Unknown data type: {data_type}")
-
-        sorted_items = {
-            "Branded": branded_items,
-            "Survey": survey_items
+    data = response.json()
+    if data.get('totalHits') == 0:
+        print('TODO -- FIX TOTALHITS')
+        return None
+    
+    food_items = []
+    unsorted_foods = data.get('foods', [])
+    email = session.get('user', {}).get('email')
+    if email:
+        custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+        custom_items = custom_items.get("items", [])
+    for item in unsorted_foods:
+        fdc_id = item.get('fdcId')
+        description = item.get('description')
+        data_type = item.get('dataType')
+        food_nutrients = item.get('foodNutrients', [])
+        filtered = [nutrient for nutrient in food_nutrients if nutrient['value'] > 0.5]
+        
+        common_info = {
+            'fdcId': fdc_id,
+            'description': description,
+            'dataType': data_type,
+            'foodNutrients': filtered
         }
         
-        return sorted_items
-    else:
-        return None
+        if data_type == 'Branded':
+            subinfo = {
+                'brandOwner': item.get('brandOwner'),
+                'brandName': item.get('brandName'),
+                'ingredients': item.get('ingredients'),
+                'servingSize': item.get('servingSize'),
+                'servingSizeUnit': item.get('servingSizeUnit'),
+                'householdServingFullText': item.get('householdServingFullText'),
+                'gtinUpc': item.get('gtinUpc'),
+                'foodCategory': item.get('foodCategory'),
+                'packageWeight': item.get('packageWeight'),
+                'publishedDate': item.get('publishedDate'),
+                'modifiedDate': item.get('modifiedDate')
+            }
+        elif data_type == 'Survey (FNDDS)':
+            subinfo = {
+                'additionalDescriptions': item.get('additionalDescriptions'),
+                'foodCategory': item.get('foodCategory'),
+                'foodCode': item.get('foodCode'),
+                'publishedDate': item.get('publishedDate'),
+                'finalFoodInputFoods': item.get('finalFoodInputFoods', []),
+                'foodMeasures': item.get('foodMeasures', [])
+            }
+    
+    return common_info + subinfo
 
 # TODO fix the quantity amount, the user should be able to be prompted for expiry, cost and etc from the addition instead of auto-push
 @app.route('/create_new_food', methods=['POST'])
@@ -178,7 +232,6 @@ def search():
         if sorted_items is None:
             sorted_items = {}
 
-        # Fetch custom items
         email = session.get('user', {}).get('email')
         custom_items = []
         if email:
@@ -333,14 +386,6 @@ def logout():
     session.pop('user', None)
     return jsonify({"message": "Logged out successfully"}), 200
 
-# this is used when the front needs to fetch the current user
-# authcontext.js uses this mainly
-@app.route('/current_user', methods=['GET'])
-def current_user():
-    user = session.get('user')
-    if user:
-        return jsonify(user), 200
-    return jsonify({"error": "Not logged in"}), 401
 
 # basically add to pantry but just returns list
 @app.route('/pantry', methods=['GET'])
