@@ -30,14 +30,21 @@ def itemify(email):
 
 def get_user_email():
     user = session.get('user')
-    print(user)
     if user:
         return user.get('email')
     return None
 
 def search_item(query, allWords=False, pageNumber=1, pageSize=20, DataType=None, format="abridged"):
     base_url = "https://api.nal.usda.gov/fdc/v1/foods/search"
-    data_types = DataType if isinstance(DataType, list) else [DataType]
+
+    if DataType == "All":
+        data_types = ["Branded", "Survey (FNDDS)"]
+    elif DataType == "Branded":
+        data_types = ["Branded"]
+    elif DataType == "Survey":
+        data_types = ["Survey (FNDDS)"]
+    else:
+        data_types = ["Custom"]
 
     all_items = []
     for data_type in data_types:
@@ -160,7 +167,6 @@ def oauth2callback():
 @app.route('/current_user', methods=['GET'])
 def current_user():
     user = session.get('user')
-    print(user)
     if user:
         user_data = users_collection.find_one({"email": user['email']}, {"_id": 0})
         return jsonify(user_data), 200
@@ -177,7 +183,6 @@ def onboarding():
     weight = request.json.get('weight')
     gender = request.json.get('gender')
 
-    print(f"Onboarding data: {email}, {birthday}, {height}, {weight}, {gender}")
 
     users_collection.update_one(
         {"email": email},
@@ -203,7 +208,6 @@ def get_pantry():
         return jsonify({"error": "Not logged in"}), 401
 
     pantry = db.pantry.find_one({"email": email}, {"_id": 0, "items": 1})
-    print(pantry)
     return jsonify(pantry["items"] if pantry else [])
 
 @app.route('/search', methods=['GET'])
@@ -221,19 +225,25 @@ def search():
         return jsonify({"error": "Not logged in"}), 401
 
     sorted_items = {"Custom": [], "Branded": [], "Survey": []}
-    custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
-    custom_items = custom_items.get("items", [])
-    sorted_items["Custom"].extend(custom_items)
+    
 
-    if data_type == "ALL" or data_type in ["Branded", "Survey"]:
-        usda_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType=data_type)
+    
+    if data_type == "Custom" or data_type == "All":
+        custom_items = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+        custom_items = custom_items.get("items", [])
+        for item in custom_items:
+            if query.lower() in item['description'].lower():
+                sorted_items["Custom"].append(item)
+    if data_type == "Branded" or data_type == "All":
+        usda_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType="Branded")
         if usda_items:
             for item in usda_items:
-                if item['dataType'] == 'Branded':
-                    sorted_items["Branded"].append(item)
-                elif item['dataType'] == 'Survey (FNDDS)':
-                    sorted_items["Survey"].append(item)
-
+                sorted_items["Branded"].append(item)
+    if data_type == "Survey" or data_type == "All":
+        usda_items = search_item(query, allWords=all_words, pageNumber=page_number, pageSize=page_size, DataType="Survey")
+        if usda_items:
+            for item in usda_items:
+                sorted_items["Survey"].append(item)
     return jsonify(sorted_items)
 
 @app.route('/create_new_food', methods=['POST'])
@@ -289,7 +299,6 @@ def add_to_pantry():
     
     return jsonify({"message": "Item added to pantry"}), 200
 
-
 @app.route('/update_quantity', methods=['POST'])
 def update_quantity():
     email = get_user_email()
@@ -297,11 +306,11 @@ def update_quantity():
         return jsonify({"error": "Not logged in"}), 401
 
     item = request.json.get('item')
-    increment = request.json.get('increment')
+    quantity = request.json.get('quantity')
 
     db.pantry.update_one(
         {"email": email, "items.item.description": item["description"]},
-        {"$inc": {"items.$.quantity": 1 if increment else -1}}
+        {"$set": {"items.$.quantity": quantity}}
     )
 
     return jsonify({"message": "Quantity updated successfully"}), 200
@@ -320,6 +329,15 @@ def remove_item():
     )
 
     return jsonify({"message": "Item removed from pantry"}), 200
+
+@app.route('/custom_foods', methods=['GET'])
+def custom_foods():
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    custom_foods = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
+    return jsonify(custom_foods.get("items", []))
 
 
 
