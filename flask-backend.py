@@ -339,6 +339,21 @@ def custom_foods():
     custom_foods = foods_collection.find_one({"email": email}, {"_id": 0, "items": 1})
     return jsonify(custom_foods.get("items", []))
 
+@app.route('/update_custom_food_ingredients', methods=['POST'])
+def update_custom_food_ingredients():
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    item = request.json.get('item')
+    ingredients = request.json.get('ingredients')
+
+    db.foods.update_one(
+        {"email": email, "items.description": item["description"]},
+        {"$set": {"items.$.ingredients": ingredients}}
+    )
+
+    return jsonify({"message": "Ingredients updated successfully"}), 200
 
 
 if __name__ == '__main__':
