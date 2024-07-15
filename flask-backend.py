@@ -22,6 +22,10 @@ pantry_collection = db.pantry
 foods_collection = db.food
 
 
+
+
+
+
 def itemify(email):
     return {
         "email": email,
@@ -354,6 +358,21 @@ def update_custom_food_ingredients():
     )
 
     return jsonify({"message": "Ingredients updated successfully"}), 200
+
+@app.route('/add_custom_food', methods=['POST'])
+def add_custom_food():
+    email = get_user_email()
+    if not email:
+        return jsonify({"error": "Not logged in"}), 401
+
+    item = request.json
+    db.foods.update_one(
+        {"email": email},
+        {"$push": {"items": item}},
+        upsert=True
+    )
+
+    return jsonify({"message": "Custom food added successfully"}), 200
 
 
 if __name__ == '__main__':
